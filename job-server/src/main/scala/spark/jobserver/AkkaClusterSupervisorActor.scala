@@ -5,6 +5,7 @@ import java.nio.charset.Charset
 import java.util.concurrent.TimeUnit
 
 import akka.actor._
+import akka.pattern.ask
 import akka.cluster.Cluster
 import akka.cluster.ClusterEvent.{InitialStateAsEvents, MemberEvent, MemberUp}
 import akka.util.Timeout
@@ -21,6 +22,7 @@ import akka.pattern.gracefulStop
 import org.joda.time.DateTime
 import org.slf4j.LoggerFactory
 import spark.jobserver.io.JobDAOActor.CleanContextJobInfos
+import spark.jobserver.JobManagerActor.{GetContextInfo, ContextInfo, SparkContextDead}
 
 /**
  * The AkkaClusterSupervisorActor launches Spark Contexts as external processes
@@ -113,6 +115,22 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
 
     case ListContexts =>
       sender ! contexts.keys.toSeq
+
+    case GetSparkContextInfo(name) =>
+      contexts.get(name) match {
+        case Some((actor, _)) =>
+          val future = (actor ? GetContextInfo)(30.seconds)
+          val originator = sender
+          future.collect {
+            case ContextInfo(appId, Some(webUi)) =>
+              originator ! SparkContextInfo(name, appId, Some(webUi))
+            case ContextInfo(appId, None) => originator ! SparkContextInfo(name, appId, None)
+            case SparkContextDead =>
+              logger.info("SparkContext {} is dead", name)
+              originator ! NoSuchContext
+          }
+        case _ => sender ! NoSuchContext
+      }
 
     case AddContext(name, contextConfig) =>
       val originator = sender()
